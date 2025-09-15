@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Permissions-Policy" content="fullscreen=*">
+    <title>Document Upload History</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="styles.css" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="filters mb-4">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <input type="month" class="form-control" id="monthFilter">
+                </div>
+                <div class="col-md-4">
+                    <select class="form-select" id="statusFilter">
+                        <option value="">All Statuses</option>
+                        <option value="passed">Passed</option>
+                        <option value="failed">Failed</option>
+                    </select>
+                </div>
+                <div class="col-md-4" id="employeeFilterContainer">
+                    <select class="form-select" id="employeeFilter">
+                        <option value="">All Employees</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Employee</th>
+                        <th>File Name</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="historyTable">
+                    <tr>
+                        <td colspan="4" class="text-center">Loading data...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination-container">
+            <div class="pagination-info" id="paginationInfo"></div>
+            <nav aria-label="Page navigation">
+                <ul class="pagination" id="pagination"></ul>
+            </nav>
+        </div>
+    </div>
+
+    <script>
+        // Mock Telegram WebApp for testing
+        window.Telegram = window.Telegram || {
+            WebApp: {
+                expand: () => console.log('Telegram WebApp expanded'),
+                initDataUnsafe: {
+                    user: window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp.initDataUnsafe.user : {
+                        first_name: '',
+                        last_name: '',
+                        username: ''
+                    }
+                },
+                showPopup: (config) => {
+                    alert(`${config.title}\n\n${config.message}`);
+                }
+            }
+        };
+
+        // Fullscreen functionality
+        let isFullscreen = false;
+
+        async function enterFullscreen() {
+            const elem = document.documentElement;
+            
+            try {
+                if (elem.requestFullscreen) {
+                    await elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) { /* Safari */
+                    await elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) { /* IE11 */
+                    await elem.msRequestFullscreen();
+                }
+            } catch (err) {
+                console.error('Fullscreen error:', err);
+                alert('Unable to enter fullscreen mode. Please check your browser permissions.');
+            }
+        }
+
+        function exitFullscreen() {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) { /* Safari */
+                document.webkitExitFullscreen();
+            } else if (document.msExitFullscreen) { /* IE11 */
+                document.msExitFullscreen();
+            }
+        }
+
+        function handleFullscreenChange() {
+            isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+            
+            const enterBtn = document.getElementById('enterFullscreen');
+            const exitBtn = document.getElementById('exitFullscreen');
+            const indicator = document.getElementById('fullscreenIndicator');
+            
+            if (isFullscreen) {
+                document.body.classList.add('fullscreen-mode');
+                enterBtn.style.display = 'none';
+                exitBtn.style.display = 'flex';
+                indicator.classList.add('show');
+                
+                // Auto-hide indicator after 3 seconds
+                setTimeout(() => {
+                    indicator.classList.remove('show');
+                }, 3000);
+            } else {
+                document.body.classList.remove('fullscreen-mode');
+                enterBtn.style.display = 'flex';
+                exitBtn.style.display = 'none';
+                indicator.classList.remove('show');
+            }
+        }
+
+        // Listen for fullscreen change events
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+        document.addEventListener('msfullscreenchange', handleFullscreenChange);
+
+        // Listen for ESC key to exit fullscreen
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape' && isFullscreen) {
+                exitFullscreen();
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function () {
+            // Initialize Telegram WebApp
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+
+            // DOM Elements
+            const historyTable = document.getElementById('historyTable');
+            const monthFilter = document.getElementById('monthFilter');
+            const employeeFilter = document.getElementById('employeeFilter');
+            const statusFilter = document.getElementById('statusFilter');
+            const pagination = document.getElementById('pagination');
+            const paginationInfo = document.getElementById('paginationInfo');
+            const userInfo = document.getElementById('user-info');
+
+            // State
+            let currentPage = 1;
+            const itemsPerPage = 10;
+            let allHistory = [];
+            let filteredHistory = [];
+
+            // Set default to current month
+            if (monthFilter) {
+                const now = new Date();
+                const monthString = now.toISOString().slice(0, 7);
+                monthFilter.value = monthString;
+            }
+
+            // Initialize user info
+            function initUserInfo() {
+                if (!userInfo) return;
+                const user = tg.initDataUnsafe?.user;
+                if (user) {
+                    userInfo.innerHTML = `
+                        <p>Welcome, ${user.first_name} ${user.last_name || ''}</p>
+                    `;
+                }
+            }
+
+            // Format date
+            function formatDate(dateString) {
+                const date = new Date(dateString);
+                const day = date.getDate();
+                const hours = date.getHours();
+                const minutes = date.getMinutes();
+                const ampm = hours >= 12 ? 'PM' : 'AM';
+                const formattedHours = hours % 12 || 12;
+                const formattedMinutes = minutes.toString().padStart(2, '0');
+                return `${day}, ${formattedHours}:${formattedMinutes} ${ampm}`;
+            }
+
+            // Format file size
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            // Test different API endpoints to find your database connection
+            async function testApiEndpoints() {
+                const endpoints = [
+                    '/api/history',
+                    '/api/upload-history', 
+                    '/history',
+                    '/api/documents',
+                    '/api/files',
+                    '/uploads/history'
+                ];
+                
+                console.log('Testing API endpoints...');
+                
+                for (const endpoint of endpoints) {
+                    try {
+                        console.log(`Testing: ${endpoint}`);
+                        const response = await fetch(endpoint);
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            console.log(`✓ ${endpoint} works! Status: ${response.status}`);
+                            console.log('Sample data:', data);
+                            return { endpoint, data };
+                        } else {
+                            console.log(`✗ ${endpoint} - Status: ${response.status}`);
+                        }
+                    } catch (error) {
+                        console.log(`✗ ${endpoint} - Error: ${error.message}`);
+                    }
+                }
+                
+                return null;
+            }
+
+            // Load history from your actual database
+            async function loadHistory() {
+                try {
+                    showMessage('Loading data from database...', 'info');
+                    
+                    // Get user info from Telegram WebApp
+                    const user = tg.initDataUnsafe?.user;
+                    if (!user) {
+                        throw new Error('User information not available');
+                    }
+                    
+                    // Make API request with user info in headers
+                    const response = await fetch('/api/history', {
+                        headers: {
+                            'X-User-ID': user.id.toString()
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Handle different data structures that might come from your API
+                    let historyData = data.history || [];
+                    const employees = data.employees || [];
+                    
+                    if (!Array.isArray(historyData)) {
+                        throw new Error('Invalid data format received from API');
+                    }
+                    
+                    // Map your database fields to expected format
+                    allHistory = historyData.map(item => ({
+                        id: item.id || item._id || Math.random().toString(),
+                        session_date: item.session_date || item.upload_date || item.created_at || item.date,
+                        employee_name: item.employee_name || item.user_name || item.uploaded_by || item.name,
+                        original_name: item.original_name || item.filename || item.file_name || item.name,
+                        file_size: item.file_size || item.size || 0,
+                        validation_status: item.validation_status || item.status || 'unknown',
+                        validation_errors: item.validation_errors || item.errors || item.error_message || null,
+                        user_id: item.user_id
+                    }));
+                    
+                    console.log(`Loaded ${allHistory.length} records from database`);
+                    
+                    // Handle employee filter visibility and population
+                    const employeeFilterContainer = document.getElementById('employeeFilterContainer');
+                    if (employeeFilterContainer) {
+                        if (employees.length > 0) {
+                            // Show employee filter for managers
+                            employeeFilterContainer.style.display = 'block';
+                            const employeeOptions = employees
+                                .map(emp => `<option value="${emp.telegram_id}">${emp.first_name}</option>`)
+                                .join('');
+                            employeeFilter.innerHTML = '<option value="">All Employees</option>' + employeeOptions;
+                        } else {
+                            // Hide employee filter for regular employees
+                            employeeFilterContainer.style.display = 'none';
+                        }
+                    }
+                    
+                    if (allHistory.length === 0) {
+                        showMessage('No data found in database', 'warning');
+                        return;
+                    }
+                    
+                    applyFilters();
+                    
+                } catch (error) {
+                    console.error('Database connection error:', error);
+                    showError(`Database Error: ${error.message}`);
+                    
+                    // Show detailed error information
+                    const errorDetails = document.createElement('div');
+                    errorDetails.className = 'alert alert-danger mt-3';
+                    errorDetails.innerHTML = `
+                        <h6>Database Connection Failed</h6>
+                        <p><strong>Error:</strong> ${error.message}</p>
+                        <p><strong>Possible Solutions:</strong></p>
+                        <ul>
+                            <li>Check if your server is running</li>
+                            <li>Verify your API endpoints are accessible</li>
+                            <li>Check console for detailed error logs</li>
+                            <li>Ensure CORS is properly configured if needed</li>
+                        </ul>
+                        <button class="btn btn-primary btn-sm" onclick="loadHistory()">Retry Connection</button>
+                    `;
+                    
+                    document.querySelector('.container').appendChild(errorDetails);
+                }
+            }
+
+            function showMessage(msg, type = 'info') {
+                if (historyTable) {
+                    const className = type === 'warning' ? 'text-warning' : type === 'error' ? 'text-danger' : 'text-info';
+                    historyTable.innerHTML = `<tr><td colspan="4" class="${className} text-center">${msg}</td></tr>`;
+                }
+            }
+
+            function showError(msg) {
+                showMessage(msg, 'error');
+            }
+
+            // Populate filters
+            function populateFilters() {
+                if (!employeeFilter) return;
+                
+                const employees = new Set();
+                allHistory.forEach(item => {
+                    if (item.employee_name) {
+                        employees.add(item.employee_name);
+                    }
+                });
+                
+                const employeeOptions = Array.from(employees)
+                    .sort()
+                    .map(emp => `<option value="${emp}">${emp}</option>`)
+                    .join('');
+                    
+                employeeFilter.innerHTML = '<option value="">All Employees</option>' + employeeOptions;
+            }
+
+            // Apply filters
+            function applyFilters() {
+                const selectedMonth = monthFilter ? monthFilter.value : '';
+                const selectedEmployee = employeeFilter ? employeeFilter.value : '';
+                const selectedStatus = statusFilter ? statusFilter.value : '';
+
+                filteredHistory = allHistory.filter(item => {
+                    const itemDate = new Date(item.session_date);
+                    const itemMonth = itemDate.toISOString().slice(0, 7);
+                    const monthMatch = !selectedMonth || itemMonth === selectedMonth;
+                    const employeeMatch = !selectedEmployee || item.user_id.toString() === selectedEmployee;
+                    const statusMatch = !selectedStatus || item.validation_status === selectedStatus;
+                    
+                    return monthMatch && employeeMatch && statusMatch;
+                });
+
+                currentPage = 1;
+                displayHistory();
+                updatePagination();
+            }
+
+            // Display history with proper pagination
+            function displayHistory() {
+                if (!historyTable) return;
+                
+                const start = (currentPage - 1) * itemsPerPage;
+                const end = start + itemsPerPage;
+                const pageItems = filteredHistory.slice(start, end);
+
+                if (pageItems.length === 0) {
+                    historyTable.innerHTML = `
+                        <tr>
+                            <td colspan="4" class="text-center">No records found for current filters</td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                historyTable.innerHTML = pageItems.map(item => `
+                    <tr>
+                        <td>${formatDate(item.session_date)}</td>
+                        <td>${item.employee_name || 'Unknown'}</td>
+                        <td>${item.original_name}</td>
+                        <td>
+                            <span class="status-badge status-${item.validation_status}">
+                                ${item.validation_status}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+
+            // Enhanced pagination with proper page calculation
+            function updatePagination() {
+                if (!pagination || !paginationInfo) return;
+                
+                const totalPages = Math.ceil(filteredHistory.length / itemsPerPage);
+                const start = (currentPage - 1) * itemsPerPage + 1;
+                const end = Math.min(currentPage * itemsPerPage, filteredHistory.length);
+                
+                // Update pagination info
+                paginationInfo.textContent = totalPages > 0 
+                    ? `Showing ${start}-${end} of ${filteredHistory.length} entries`
+                    : 'No entries found';
+                
+                if (totalPages <= 1) {
+                    pagination.innerHTML = '';
+                    return;
+                }
+                
+                let paginationHtml = '';
+                
+                // Previous button
+                paginationHtml += `
+                    <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+                        <a class="page-link" href="#" data-page="${currentPage - 1}">
+                            <i class="bi bi-chevron-left"></i> Previous
+                        </a>
+                    </li>
+                `;
+                
+                // Calculate page numbers to show
+                let startPage = Math.max(1, currentPage - 2);
+                let endPage = Math.min(totalPages, currentPage + 2);
+                
+                // Adjust if we're near the beginning
+                if (currentPage <= 3) {
+                    endPage = Math.min(5, totalPages);
+                }
+                
+                // Adjust if we're near the end
+                if (currentPage > totalPages - 3) {
+                    startPage = Math.max(1, totalPages - 4);
+                }
+                
+                // First page + ellipsis if needed
+                if (startPage > 1) {
+                    paginationHtml += `
+                        <li class="page-item">
+                            <a class="page-link" href="#" data-page="1">1</a>
+                        </li>
+                    `;
+                    if (startPage > 2) {
+                        paginationHtml += `
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                        `;
+                    }
+                }
+                
+                // Page numbers
+                for (let i = startPage; i <= endPage; i++) {
+                    paginationHtml += `
+                        <li class="page-item ${currentPage === i ? 'active' : ''}">
+                            <a class="page-link" href="#" data-page="${i}">${i}</a>
+                        </li>
+                    `;
+                }
+                
+                // Last page + ellipsis if needed
+                if (endPage < totalPages) {
+                    if (endPage < totalPages - 1) {
+                        paginationHtml += `
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                        `;
+                    }
+                    paginationHtml += `
+                        <li class="page-item">
+                            <a class="page-link" href="#" data-page="${totalPages}">${totalPages}</a>
+                        </li>
+                    `;
+                }
+                
+                // Next button
+                paginationHtml += `
+                    <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+                        <a class="page-link" href="#" data-page="${currentPage + 1}">
+                            Next <i class="bi bi-chevron-right"></i>
+                        </a>
+                    </li>
+                `;
+                
+                pagination.innerHTML = paginationHtml;
+                
+                // Add click event listeners to pagination links
+                pagination.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const target = e.target.closest('a[data-page]');
+                    if (target) {
+                        const page = parseInt(target.dataset.page);
+                        if (page && page !== currentPage && page >= 1 && page <= totalPages) {
+                            changePage(page);
+                        }
+                    }
+                });
+            }
+
+            // Change page function
+            function changePage(page) {
+                const totalPages = Math.ceil(filteredHistory.length / itemsPerPage);
+                if (page < 1 || page > totalPages || page === currentPage) return;
+                
+                currentPage = page;
+                displayHistory();
+                updatePagination();
+                
+                // Scroll to top of table
+                document.querySelector('.table-responsive')?.scrollIntoView({ 
+                    behavior: 'smooth', 
+                    block: 'start' 
+                });
+            }
+
+            // Global function for viewing details
+            window.viewDetails = function(id) {
+                const item = allHistory.find(h => h.id === id);
+                if (item) {
+                    const message = `
+File: ${item.original_name}
+Size: ${formatFileSize(item.file_size)}
+Status: ${item.validation_status}
+Date: ${formatDate(item.session_date)}
+Employee: ${item.employee_name}
+${item.validation_errors ? `\nErrors: ${item.validation_errors}` : ''}
+                    `;
+                    
+                    tg.showPopup({
+                        title: 'File Details',
+                        message: message.trim(),
+                        buttons: [{ type: 'close' }]
+                    });
+                }
+            };
+
+            // Event listeners
+            if (monthFilter) monthFilter.addEventListener('change', applyFilters);
+            if (employeeFilter) employeeFilter.addEventListener('change', applyFilters);
+            if (statusFilter) statusFilter.addEventListener('change', applyFilters);
+
+            // Initialize
+            initUserInfo();
+            loadHistory();
+        });
+    </script>
+</body>
+</html>
