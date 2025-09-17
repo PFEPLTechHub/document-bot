@@ -900,7 +900,7 @@ Commands:
                 return new_filename
             counter += 1
 
-    async def finalize_upload(self, query, context: ContextTypes.DEFAULT_TYPE):
+   async def finalize_upload(self, query, context: ContextTypes.DEFAULT_TYPE):
         """Move validated files to final locations (both local and network)"""
         user_id = query.from_user.id
         
@@ -937,10 +937,19 @@ Commands:
                 network_dst = os.path.join(network_path, network_filename)
                 
                 if os.path.isfile(src):
+                    logger.info(f"[Finalize] Copying to local: {src} -> {local_dst}")
                     # Copy to local storage
                     shutil.copy2(src, local_dst)
+                    logger.info(f"[Finalize] Local copy done: {local_dst}")
+
+                    logger.info(f"[Finalize] Copying to network: {src} -> {network_dst}")
                     # Copy to network storage
-                    shutil.copy2(src, network_dst)
+                    try:
+                        shutil.copy2(src, network_dst)
+                        logger.info(f"[Finalize] Network copy done: {network_dst}")
+                    except Exception as e:
+                        logger.error(f"[Finalize] Network copy failed for '{file_name}': {e}")
+                        # Continue after logging; local copy still succeeded
                     # Remove from temp
                     os.remove(src)
                     moved_files.append(file_name)
